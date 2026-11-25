@@ -3,169 +3,167 @@
 | Metadado | Detalhe |
 | :--- | :--- |
 | **Documento** | Product Requirements Document (PRD) |
-| **Produto** | Plataforma de Pedidos B2B |
-| **Funcionalidade** | Sistema de Notificação de Status de Pedidos por Webhooks Outbound |
+| **Produto** | Order Management System (OMS) B2B |
+| **Funcionalidade** | Sistema de Webhooks Outbound para Notificação de Pedidos |
 | **Status** | Aprovado |
-| **Versão** | 1.0.0 |
+| **Versão** | 1.1.0 |
 | **Product Manager** | Marcos |
 | **Tech Lead** | Larissa |
-| **Data** | 2026-11-24 |
-| **Público-Alvo** | Clientes B2B, Engenharia de Software, Operações e Suporte Técnico |
+| **Data** | 2026-11-25 |
+| **Público-Alvo** | Clientes B2B (Atlas Comercial, MaxDistribuição, Nova Cargo), Engenharia e Operações |
 
 ---
 
-## 1. Sumário Executivo & Contexto do Negócio
+## 1. Sumário Executivo e Contexto do Negócio
 
-A plataforma de e-commerce e gestão de pedidos opera com crescente volume de transações corporativas (B2B). Clientes de grande porte com centros de distribuição e frotas próprias necessitam reagir em tempo real a cada atualização no ciclo de vida dos pedidos (por exemplo, quando um pedido é confirmado, separado em estoque, despachado ou entregue).
+O Order Management System (OMS) gerencia pedidos corporativos em banco MySQL controlando o ciclo de vida definido na máquina de estados (`PENDING`, `PAID`, `PROCESSING`, `SHIPPED`, `DELIVERED`, `CANCELLED` — `prisma/schema.prisma` e `src/modules/orders/order.status.ts`). Três clientes B2B estratégicos — **Atlas Comercial**, **MaxDistribuição** e **Nova Cargo** — precisam reagir em tempo real às mudanças de status dos seus pedidos (`[09:00] Marcos`).
 
-Atualmente, esses clientes realizam consultas repetidas e exaustivas (polling) aos endpoints de pedidos da API REST a cada poucos segundos. Isso gera consumo ineficiente de banda de rede, latência de sincronização para os clientes e carga desnecessária sobre o banco de dados da plataforma.
-
-Este documento define os requisitos de produto para a introdução do sistema de **Notificações Outbound via Webhooks**, permitindo que os sistemas parceiros cadastrem URLs seguras para receberem eventos em tempo real assim que qualquer alteração de status for processada.
+Atualmente, não existe nenhum mecanismo de eventos ou notificações externas no sistema. Para descobrir mudanças de estado, os parceiros executam polling contínuo sobre `GET /api/v1/orders`, tornando suas integrações lentas e onerosas. Este PRD consolida os requisitos de produto e negócio para a implementação do **Sistema de Webhooks Outbound de Notificação de Pedidos**.
 
 ---
 
-## 2. Problema & Motivação
+## 2. Problema e Motivação
 
 ### 2.1. O Problema
-Grandes parceiros comerciais enfrentam atrasos operacionais para sincronizar estados de pedidos:
-- **Atlas E-commerce:** Relata atrasos na sincronização de fulfillment e separação de mercadorias no centro de distribuição, pois suas rotinas de consulta periódica à API enfrentam gargalos de concorrência.
-- **MaxDistribuição:** Mantém rotinas automatizadas de polling com intervalos inferiores a 5 segundos, gerando alto volume de requisições redundantes (HTTP 200 com os mesmos dados) e alertando limites de taxa (*rate limiting*).
-- **Nova Cargo Transportes:** Necessita saber instantaneamente quando uma remessa atinge o status `DISPATCHED` para acionar motoristas e roteirizar veículos, sofrendo com esperas que impactam o SLA logístico acordado.
+Conforme relatado na reunião de alinhamento (`[09:00] Marcos`):
+- Os clientes **Atlas Comercial**, **MaxDistribuição** e **Nova Cargo** solicitam formalmente notificações automáticas quando o status de seus pedidos é alterado.
+- O modelo atual baseado em consultas periódicas em `GET /api/v1/orders` gera latência operacional de sincronização e consumo desnecessário de recursos na integração dos clientes e na API do OMS.
+- A **Atlas Comercial** sinalizou que, caso a capacidade de notificação não seja entregue até o fim do trimestre, poderá migrar para um concorrente (`[09:00] Marcos`).
 
 ### 2.2. A Solução
-Substituir o modelo passivo (*pull/polling*) por um modelo ativo orientado a eventos (*push/webhook*). Toda transição de status confirmada gerará um disparo HTTP direto para o endpoint HTTPS registrado pelo parceiro, contendo os dados essenciais da mudança de estado e assinaturas criptográficas para validação de autenticidade.
+Substituir o modelo passivo de consulta (*polling* pelo cliente) por notificações ativas orientadas a eventos (*outbound webhooks*). Toda transição válida de status de pedido executada via `PATCH /api/v1/orders/:id/status` passará a gerar, de forma transacional e assíncrona, requisições HTTPS assinadas via HMAC-SHA256 para os endpoints cadastrados pelo cliente interessado naquele status (`[09:02] Marcos`, `[09:33] Bruno`).
 
 ---
 
-## 3. Público-Alvo, Personas & Casos de Uso
+## 3. Público-Alvo, Personas e Cenários de Uso
 
 ### 3.1. Personas
 
 | Persona | Papel | Necessidade Principal |
 | :--- | :--- | :--- |
-| **Desenvolvedor Parceiro B2B** | Engenheiro de Integração de clientes como Atlas, MaxDistribuição e Nova Cargo | Cadastrar URLs seguras, receber eventos em formato padronizado, validar a autenticidade das mensagens via HMAC e contar com rastreabilidade de entregas. |
-| **Gerente de Operações Logísticas** | Gestor de Cadeia de Suprimentos externa | Ter a certeza de que despachos e confirmações de entrega chegam ao seu ERP com latência inferior a 10 segundos para não atrasar a expedição. |
-| **Administrador / Suporte Interno** | Engenheiro de Suporte e Operações da Plataforma | Monitorar o fluxo de entrega, diagnosticar parceiros com falhas de conectividade e reenviar notificações retidas via Dead Letter Queue. |
+| **Operador / Engenheiro de Integração do Parceiro B2B** | Representante técnico de clientes como Atlas Comercial, MaxDistribuição e Nova Cargo | Cadastrar URLs HTTPS, selecionar quais status receber (`SHIPPED`, `DELIVERED`, etc.), validar autenticidade via `X-Signature`, deduplicar via `X-Event-Id` e consultar histórico de entregas. |
+| **Operador Interno do OMS** | Usuário autenticado que opera pedidos e cadastros na API do OMS | Cadastrar e gerenciar webhooks de clientes B2B usando o JWT do próprio OMS (`[09:32] Marcos, Larissa`). |
+| **Administrador da Plataforma (`ADMIN`)** | Engenheiro de Operações / Suporte com perfil `UserRole.ADMIN` | Inspecionar falhas permanentes encaminhadas à Dead Letter Queue e reprocessar mensagens manualmente com registro de auditoria (`[09:36] Sofia, Larissa`). |
 
-### 3.2. Principais Casos de Uso
-1. **UC-01 (Cadastro e Ativação de Endpoint):** O desenvolvedor do cliente B2B cadastra a URL HTTPS do seu sistema, gerando um segredo compartilhado para validação das assinaturas.
-2. **UC-02 (Recepção Automática de Evento de Pedido):** Ao ocorrer a mudança de status do pedido de `PENDING` para `CONFIRMED`, o parceiro recebe um POST com payload formatado e cabeçalhos de segurança.
-3. **UC-03 (Recuperação de Falha Temporária):** O servidor do parceiro fica temporariamente indisponível durante manutenção; nossa plataforma retenta o envio automaticamente seguindo uma escala progressiva de tempo.
-4. **UC-04 (Auditoria e Replay de Falhas Persistentes):** Um evento que excedeu 5 tentativas de entrega vai para a fila de erros (DLQ). Após o parceiro corrigir seu serviço, um administrador do sistema executa o reenvio manual do evento.
+### 3.2. Cenários de Uso Principais
+1. **UC-01 (Cadastro e Filtro de Eventos):** Operador cadastra uma URL HTTPS associada ao `customerId`, escolhe a lista de status desejados (ex.: `["SHIPPED", "DELIVERED"]`) e recebe uma chave secreta exclusiva gerada pela plataforma (`[09:31]–[09:33] Marcos`).
+2. **UC-02 (Notificação em Tempo Real de Mudança de Status):** Quando um pedido passa de `PROCESSING` para `SHIPPED`, os endpoints ativos desse cliente interessados em `SHIPPED` recebem um POST assinado em menos de 10 segundos (`[09:02] Marcos`, `[09:33] Bruno`).
+3. **UC-03 (Tolerância a Indisponibilidade Temporária):** Se o servidor do cliente estiver em janela de manutenção (ex.: 2 horas), o worker retenta o envio progressivamente em até 5 retentativas (~15 horas) sem intervenção manual (`[09:16]–[09:17] Diego`).
+4. **UC-04 (Auditoria e Replay na DLQ):** Após esgotamento de retries, o evento vai para a Dead Letter Queue; quando o cliente regulariza seu endpoint, um usuário `ADMIN` aciona o replay manual (`[09:18] Diego`, `[09:36] Sofia`).
+5. **UC-05 (Rotação Segura de Secret):** Em caso de suspeita de vazamento ou política de troca de chaves, um novo segredo é gerado mantendo o segredo anterior válido por 24 horas para migração sem downtime (`[09:21]–[09:22] Sofia, Diego`).
 
 ---
 
-## 4. Objetivos do Produto & Métricas de Sucesso
+## 4. Objetivos e Métricas de Sucesso
 
-### 4.1. Objetivos Quantitativos e Metas de Entrega
-
-| Métrica / Meta | Alvo Quantitativo | Impacto Esperado |
+| Objetivo / Meta | Métrica e Alvo Quantitativo | Origem / Critério de Medição |
 | :--- | :--- | :--- |
-| **Latência de Notificação** | **$\le$ 10 segundos** para 99% das notificações geradas | Garantir reação em tempo hábil para operadores de transporte e logística. |
-| **Confiabilidade de Entrega** | **99.9%** de entregas concluídas com sucesso (ou encaminhadas à DLQ para tratamento) | Zero perda de eventos transacionados no banco de dados. |
-| **Redução de Polling Ineficiente** | **$\ge$ 70%** de redução no tráfego de requisições `GET /orders` vindas de clientes B2B | Diminuição drástica de custos com I/O de banco e infraestrutura. |
-| **Prazo de Lançamento** | **3 sprints de desenvolvimento** (Conclusão até final de novembro de 2026) | Atender à janela de contratação e acordos comerciais com Atlas e MaxDistribuição. |
+| **Latência de Notificação ("Tempo Real")** | **< 10 segundos** entre o commit da mudança de status e o disparo do evento (intervalo de polling configurado em **2 segundos** no worker). | Definido em `[09:02] Marcos` e `[09:09] Larissa, Diego`. |
+| **Janela de Resiliência a Falhas Externas** | **5 retentativas** progressivas (`1m / 5m / 30m / 2h / 12h`), cobrindo **~15 horas** (~14h36m) antes de encaminhar para DLQ. | Definido em `[09:16]–[09:17] Diego, Marcos`. |
+| **Prazo de Entrega para Retenção B2B** | Conclusão integral em **3 sprints** (incluindo **2 dias úteis** reservados para revisão de segurança) até o **fim de novembro**. | Definido em `[09:00] Marcos`, `[09:45]–[09:47] Larissa, Sofia`. |
+| **Redução de Polling em `GET /api/v1/orders`** | **KPI pós-lançamento:** queda significativa do tráfego de polling dos clientes **Atlas Comercial**, **MaxDistribuição** e **Nova Cargo** (linha de base a ser medida antes/depois do rollout piloto). | Motivação de negócio descrita em `[09:00] Marcos`. |
+| **Confiabilidade de Persistência Transacional** | **100%** dos eventos de transição comitados persistidos atomicamente na outbox (zero perda silenciosa por falha de rede). | Garantia transacional definida em `[09:06] Diego`, `[09:40]–[09:41] Bruno`. |
 
 ---
 
 ## 5. Escopo do Produto
 
 ### 5.1. Em Escopo (MVP)
-- Mecanismo outbound transacional baseado em banco de dados (*Transactional Outbox*).
-- Disparo de notificações para transições de status de pedidos (`order.status_changed`).
-- Assinatura digital criptográfica HMAC-SHA256 em todas as mensagens outbound.
-- Rotação segura de segredos com janela de transição de 24 horas.
-- Mecanismo de retentativas automáticas (5 tentativas em até 15 horas).
-- Dead Letter Queue (DLQ) com capacidade de reprocessamento manual via API administrativa.
-- API REST para gerenciamento de endpoints de webhook e consulta de entregas.
+- Emissão exclusiva de **webhooks outbound** para o evento `order.status_changed` (`[09:02]–[09:03] Marcos, Sofia`).
+- Cadastro, listagem, edição (`PATCH`), exclusão (`DELETE`) e histórico de entregas (`GET /:id/deliveries`) via endpoints REST autenticados sob `/api/v1/webhooks` (`[09:31]–[09:34] Marcos, Bruno`).
+- Filtro por lista de status de pedido (`OrderStatus`) aplicado no momento da inserção na tabela outbox (`[09:33]–[09:34] Marcos, Bruno`).
+- Garantia transacional atômica com `OrderService.changeStatus`, worker em processo separado com polling de 2s, assinatura HMAC-SHA256 com secret única por endpoint e rotação de 24h, semântica *at-least-once* com `X-Event-Id`, limite de 64 KB (erro se exceder) e timeout de 10s.
+- Tabela `webhook_dead_letter` (DLQ) com endpoint de replay manual exclusivo para role `ADMIN` e registro de auditoria (`[09:18] Diego`, `[09:36] Sofia`).
 
-### 5.2. Fora de Escopo (Explicitamente Postecipado ou Descartado)
+### 5.2. Fora de Escopo (Explicitamente Descartado ou Postecipado)
 
-> [!IMPORTANT]
-> Os itens a seguir foram deliberadamente excluídos do escopo inicial durante as decisões de arquitetura e produto:
-1. **Webhooks de Entrada (Inbound):** Recepção de callbacks ou webhooks de terceiros (como gateways de pagamento). O foco atual é exclusivamente emissão (*outbound*).
-2. **Dashboard Gráfico no Frontend:** Não haverá interface visual de administração nesta fase; toda a operação e consumo serão realizados via API REST.
-3. **Fallback para E-mail:** Notificações de falha ou conteúdo de pedidos não serão despachados via e-mail corporativo em caso de falha no webhook.
-4. **Rotina de Limpeza Automática (Expurgo de 30 dias):** A exclusão automatizada de logs antigos e registros outbox foi adiada para uma fase posterior de governança de dados.
+1. **Webhooks Inbound (Recepção):** O sistema não receberá callbacks de terceiros nesta entrega (`[09:02]–[09:03] Marcos, Sofia`).
+2. **Dashboard Visual / Painel no Frontend:** Não haverá interface gráfica para gerenciamento ou visualização de entregas — responsabilidade fora de escopo do projeto de backend, ficando apenas endpoints e documentação para integração (`[09:39]–[09:40] Marcos, Larissa`).
+3. **Fallback para E-mail em Caso de Falha:** Avisos por e-mail caso um webhook falhe consecutivamente (ex.: 3 erros seguidos) foram adiados para uma fase posterior (`[09:37] Marcos, Larissa`).
+4. **Expurgo Automático de 30 Dias:** Arquivamento ou exclusão automatizada de registros `DELIVERED` após 30 dias ficou explicitamente fora do escopo desta feature (`[09:08] Diego`).
+5. **Rate Limiting Outbound por Cliente:** Controle automático de rajadas de disparos por cliente ficou em aberto para observação pós-lançamento (`[09:38]–[09:39] Diego, Larissa`).
 
 ---
 
 ## 6. Requisitos Funcionais (RFs)
 
-- **RF-01 (Cadastro de Endpoint de Webhook):** O sistema deve fornecer uma API para cadastrar URLs HTTPS de parceiros associadas a uma descrição, gerando um identificador único (`id`) e um segredo exclusivo.
-- **RF-02 (Gerenciamento de Segredo HMAC):** O sistema deve gerar uma chave criptográfica forte (mínimo de 32 bytes hexadecimais) por endpoint cadastrado para uso exclusivo na assinatura das mensagens.
-- **RF-03 (Notificação de Transição de Status):** O sistema deve disparar notificações outbound para todos os endpoints ativos sempre que o status de um pedido sofrer alteração confirmada (`order.status_changed`).
-- **RF-04 (Assinatura de Integridade Outbound):** O sistema deve assinar cada requisição HTTP outbound via HMAC-SHA256, enviando o resultado no cabeçalho `X-Signature` junto ao cabeçalho `X-Timestamp`.
-- **RF-05 (Identificador Único para Idempotência):** O sistema deve incluir em toda notificação o cabeçalho `X-Event-Id` contendo um UUID único, permitindo ao parceiro deduplicar mensagens entregues repetidas vezes.
-- **RF-06 (Política de Retentativas com Backoff Exponencial):** Em caso de falha de conexão, timeout ou retorno HTTP não-2xx, o sistema deve retentar o envio em 5 etapas progressivas (1m, 5m, 30m, 2h e 12h).
-- **RF-07 (Envio para Dead Letter Queue):** O sistema deve transferir automaticamente para a tabela de Dead Letter Queue todo evento que persistir com falha após a 5ª tentativa.
-- **RF-08 (Consulta de Histórico de Entregas):** O sistema deve disponibilizar endpoint para consulta paginada do histórico de tentativas de entrega, informando status HTTP retornado, tempo de resposta e mensagens de erro.
-- **RF-09 (Rotação de Segredo com Carência de 24h):** O sistema deve permitir a rotação do segredo de um endpoint, mantendo o segredo anterior funcional por 24 horas para evitar interrupções no parceiro.
-- **RF-10 (Replay Manual por Administrador):** O sistema deve permitir que usuários autenticados com papel `ADMIN` executem o replay de eventos registrados na Dead Letter Queue.
-- **RF-11 (Desativação e Exclusão de Endpoints):** O sistema deve permitir desativar temporariamente ou remover permanentemente endpoints de webhook cadastrados.
+- **RF-01 (Cadastro de Webhook):** Disponibilizar `POST /api/v1/webhooks` para registrar URL HTTPS, `customerId` (informado no payload, não extraído do JWT), descrição opcional e lista de status de pedido assinados (`events`), gerando e retornando a `secret` na criação (`[09:31]–[09:33] Marcos, Larissa`).
+- **RF-02 (Listagem de Webhooks por Cliente):** Disponibilizar `GET /api/v1/webhooks` para listar os endpoints cadastrados para um `customerId`, omitindo as chaves secretas (`[09:33] Bruno`).
+- **RF-03 (Edição e Remoção de Webhook):** Disponibilizar `PATCH /api/v1/webhooks/:id` para editar URL, status ativo/inativo ou filtro de eventos e `DELETE /api/v1/webhooks/:id` para remover o cadastro (`[09:33] Bruno`).
+- **RF-04 (Emissão Orientada a Transição de Status com Filtro Prévio):** Toda transição válida em `OrderService.changeStatus` deve persistir o evento `order.status_changed` na outbox dentro da mesma transação SQL **somente** para endpoints ativos do cliente que assinaram o `toStatus` (`[09:33]–[09:34] Bruno`, `[09:40] Bruno`).
+- **RF-05 (Assinatura HMAC-SHA256 e Cabeçalhos Padrão):** Toda entrega outbound deve incluir `X-Signature` (HMAC-SHA256 com secret única por endpoint), `X-Event-Id` (UUID), `X-Timestamp` (ISO 8601) e `X-Webhook-Id` (`[09:20]–[09:21] Sofia`, `[09:44] Diego, Sofia`).
+- **RF-06 (Rotação de Secret com Janela de 24h):** Disponibilizar `POST /api/v1/webhooks/:id/rotate-secret` mantendo a secret anterior válida em paralelo por **24 horas** para transição sem interrupção (`[09:21]–[09:22] Sofia`).
+- **RF-07 (Deduplicação / At-Least-Once via `X-Event-Id`):** Garantir envio *at-least-once* preservando o mesmo UUID `X-Event-Id` entre retentativas para permitir idempotência no cliente (`[09:24]–[09:25] Diego`).
+- **RF-08 (Retry com Backoff Exponencial):** Reenfileirar automaticamente entregas com falha ou timeout usando escala de 5 retentativas (`1m`, `5m`, `30m`, `2h`, `12h`) (`[09:15]–[09:17] Diego, Larissa`).
+- **RF-09 (Armazenamento em Dead Letter Queue):** Mover eventos que falharem após as 5 retentativas para a tabela `webhook_dead_letter`, registrando payload, motivo e timestamp (`[09:18] Diego`).
+- **RF-10 (Consulta de Histórico de Entregas):** Disponibilizar `GET /api/v1/webhooks/:id/deliveries` retornando histórico paginado de entregas (até os últimos 100 disparos, com sucesso/falha, payload, response e tempo de resposta — `[09:34] Marcos`).
+- **RF-11 (Replay Manual Restrito a `ADMIN`):** Disponibilizar `POST /api/v1/admin/webhooks/dead-letter/:id/replay` restrito a usuários com papel `ADMIN` (`requireRole('ADMIN')`), registrando obrigatoriamente quem executou o replay (`[09:35]–[09:36] Sofia, Larissa`).
 
 ---
 
 ## 7. Requisitos Não-Funcionais (RNFs)
 
-- **RNF-01 (Desempenho e Latência):** O background worker deve coletar eventos pendentes a cada 2 segundos, garantindo que 99% das notificações sejam despachadas em menos de 10 segundos após a confirmação no banco.
-- **RNF-02 (Timeout Restritivo de Rede):** O tempo limite de espera por resposta do endpoint do cliente deve ser de no máximo 10 segundos por requisição.
-- **RNF-03 (Segurança e Protocolo Obrigatório):** Todas as URLs de webhook registradas devem obrigatoriamente utilizar o protocolo `HTTPS`. Requisições com protocolo não criptografado (`HTTP`) devem ser rejeitadas.
-- **RNF-04 (Tamanho Máximo de Mensagem):** O payload JSON despachado não deve ultrapassar o limite arquitetural de 64 KB.
-- **RNF-05 (Disponibilidade e Resiliência):** Falhas em endpoints de clientes ou lentidões externas não podem bloquear o processamento normal de pedidos nem afetar outros clientes cadastrados.
-- **RNF-06 (Conformidade de Auditoria e Logs):** Todos os eventos de despacho e rotação de credenciais devem ser registrados em formato JSON estruturado (Pino), com mascaramento mandatório de segredos.
+- **RNF-01 (Latência e Polling):** Worker separado executando polling a cada **2 segundos** com ordenação garantida apenas por `order_id` enquanto houver instância única (`single-worker`), atendendo ao limite de **< 10 segundos** (`[09:02] Marcos`, `[09:09]–[09:13] Diego, Larissa`).
+- **RNF-02 (Timeout de Disparo HTTP):** Tempo limite rígido de **10 segundos** por requisição outbound (`[09:42] Diego, Sofia`).
+- **RNF-03 (TLS Obrigatório):** Apenas URLs com protocolo `https://` podem ser cadastradas; URLs `http://` devem ser recusadas na validação (`[09:23] Sofia`).
+- **RNF-04 (Limite de Tamanho de Payload):** Teto rígido de **64 KB** por payload; eventos maiores devem retornar erro explícito e **nunca** serem truncados (`[09:23]–[09:24] Sofia, Diego, Larissa`).
+- **RNF-05 (Isolamento de Processos e Falhas):** O worker roda como processo separado (`src/worker.ts`) conectado ao mesmo banco MySQL para evitar que quedas da API parem envios ou clientes lentos travem pedidos (`[09:04] Bruno`, `[09:11] Diego`).
+- **RNF-06 (Conformidade de Logs, Erros e Documentação ao Cliente):** Reutilizar `AppError` (`WEBHOOK_*`), Pino logger (com extensão de `redactPaths` para mascarar segredos e assinaturas) e documentar a idempotência por `X-Event-Id` no portal do desenvolvedor (`[09:26] Marcos`, `[09:28]–[09:29] Bruno, Larissa`).
 
 ---
 
-## 8. Principais Decisões de Produto & Trade-offs
+## 8. Decisões e Trade-offs Principais
 
-1. **Transactional Outbox no MySQL vs. Fila Externa (RabbitMQ/Kafka):**
-   - *Decisão:* Adotar tabela `webhook_outbox` no MySQL aproveitando a transação existente de pedidos.
-   - *Trade-off:* Evita a complexidade operacional de introduzir e gerenciar novos clusters de mensageria no MVP, garantindo 100% de consistência transacional atômica com os recursos atuais.
-2. **Modelo At-Least-Once vs. Exactly-Once:**
-   - *Decisão:* Adotar garantia de entrega *at-least-once* complementada pelo cabeçalho `X-Event-Id`.
-   - *Trade-off:* Assume a possibilidade remota de mensagens duplicadas em caso de oscilações de rede, transferindo a responsabilidade de deduplicação ao receptor via identificador único.
-3. **Carência de 24h na Rotação de Chaves:**
-   - *Decisão:* Manter duas chaves ativas simultaneamente durante 24 horas após solicitação de rotação.
-   - *Trade-off:* Adiciona complexidade na validação do receptor e na persistência de credenciais, mas elimina o risco de *downtime* na comunicação com grandes parceiros B2B.
-
----
-
-## 9. Dependências Organizacionais & Técnicas
-
-- **Dependência de Infraestrutura:** Banco de dados MySQL operando em versão compatível com transações ACID e suporte a índices compostos.
-- **Aprovações de Segurança:** Validação da política de HMAC-SHA256 e redaction de logs com a equipe de Governança e Segurança da Informação.
-- **Comunicação com Clientes:** Disponibilização da documentação dos contratos de webhook para as equipes técnicas de Atlas E-commerce, MaxDistribuição e Nova Cargo.
+1. **Transactional Outbox no MySQL vs. Infraestrutura Externa (`[09:06]–[09:07] Diego, Larissa`):**
+   - *Decisão:* Persistir eventos na tabela `webhook_outbox` dentro da transação de `OrderService.changeStatus`.
+   - *Trade-off:* Evita custo operacional de Redis/RabbitMQ/Kafka para uma equipe pequena e impede o *Dual-Write Problem*, aceitando latência mínima do ciclo de polling (2s).
+2. **At-Least-Once com `X-Event-Id` vs. Exactly-Once (`[09:24]–[09:25] Diego, Sofia`):**
+   - *Decisão:* Garantir entrega pelo menos uma vez e enviar `X-Event-Id` único por evento.
+   - *Trade-off:* Transfere ao cliente a lógica de deduplicação, porém segue o padrão de mercado (Stripe/GitHub) e evita protocolos complexos entre sistemas independentes.
+3. **Secret Única por Endpoint + Carência de 24h vs. Secret Global (`[09:21]–[09:22] Sofia, Diego`):**
+   - *Decisão:* Chave exclusiva por endpoint com rotação preservando a chave anterior por 24 horas.
+   - *Trade-off:* Aumenta ligeiramente a complexidade de verificação e armazenamento de credenciais, mas isola incidentes de vazamento por cliente e elimina downtime nas trocas de chave.
 
 ---
 
-## 10. Riscos do Produto e Matriz de Mitigação
+## 9. Dependências
+
+- **Banco de Dados e ORM:** MySQL 8.0 compatível com transações ACID + Prisma Client `5.22.0` (`prisma/schema.prisma`, `src/config/database.ts`).
+- **Módulo de Pedidos Existente:** Extensão transacional no método `changeStatus` em `src/modules/orders/order.service.ts` respeitando a máquina de estados em `src/modules/orders/order.status.ts`.
+- **Segurança e Middleware Compartilhado:** Reaproveitamento de `authenticate` e `requireRole('ADMIN')` (`src/middlewares/auth.middleware.ts`), `errorMiddleware` (`src/middlewares/error.middleware.ts`) e Pino (`src/shared/logger/index.ts`).
+- **Revisão Obrigatória de Segurança:** Reserva de pelo menos **2 dias úteis** para revisão de código pela Engenharia de Segurança (HMAC e geração de secrets) antes do deploy em produção (`[09:46]`, `[09:49] Sofia`).
+- **Documentação para Parceiros:** Atualização do portal de desenvolvedor explicando validação de HMAC-SHA256 e deduplicação por `X-Event-Id` (`[09:26]`, `[09:40] Marcos`).
+
+---
+
+## 10. Riscos e Mitigação
 
 | Risco Identificado | Probabilidade | Impacto | Plano de Mitigação |
 | :--- | :---: | :---: | :--- |
-| **Sobrecarga de rede por endpoints lentos ou fora do ar** | Alta | Médio | Configuração de timeout estrito de 10 segundos com `AbortController` e política de retentativa espaçada (backoff). |
-| **Vazamento acidental de segredos HMAC em logs** | Baixa | Alto | Configuração de *redaction paths* nativa na biblioteca de logging (Pino), mascarando cabeçalhos de assinatura e campos de segredo. |
-| **Gargalo no polling do banco com aumento de pedidos** | Média | Médio | Polling leve a cada 2s com índice composto `[status, next_retry_at]` e limite de lote configurado em 10 registros por ciclo. |
-| **Inconsistência por eventos processados fora de ordem** | Média | Baixo | Inclusão de `timestamp` ISO e campos explícitos `from_status` e `to_status` em cada payload. |
+| **Clientes lentos ou fora do ar travarem o processo de pedidos** | Alta | Alto | Desacoplamento total via Transactional Outbox + processo worker separado + timeout rígido de **10 segundos** + backoff exponencial em 5 retentativas (`[09:04] Bruno`, `[09:42] Diego`). |
+| **Vazamento de chave secreta de cliente** | Baixa | Alto | Secret exclusiva por endpoint (nunca global), rotação com janela de 24h, proibição de exibir `secret` no `GET /webhooks` e extensão de `redactPaths` no Pino (`[09:21]–[09:22] Sofia, Diego`). |
+| **Acúmulo excessivo de linhas na tabela `webhook_outbox`** | Média | Médio | Filtro prévio de eventos na inserção (`[09:34] Bruno`), índices compostos por status e data, e previsão de rotina de expurgo de 30 dias pós-MVP (`[09:08] Diego`). |
+| **Entrega duplicada ou fora de ordem em clientes B2B** | Média | Médio | Envio de `X-Event-Id` para idempotência e `X-Timestamp`/snapshot imutável no payload, operando com single-worker ordenado por `created_at` no MVP (`[09:12]`, `[09:25]`, `[09:52] Diego, Larissa`). |
+| **Rajada de disparos para um cliente sem throttling** | Média | Médio | Controle de tamanho de lote no worker, backoff em caso de HTTP 429/5xx e monitoramento em produção para avaliar rate limiting outbound (`[09:38]–[09:39] Diego`). |
 
 ---
 
-## 11. Critérios de Aceitação do Produto
+## 11. Critérios de Aceitação
 
-- [ ] Parceiros conseguem cadastrar URLs HTTPS e receber chave secreta exclusiva.
-- [ ] Alterações de status no pedido (`CONFIRMED`, `DISPATCHED`, `DELIVERED`, `CANCELLED`) acionam o despacho automático de webhooks.
-- [ ] Notificações chegam com cabeçalhos `X-Event-Id`, `X-Signature`, `X-Timestamp` e `X-Webhook-Id`.
-- [ ] Falhas no parceiro são retentadas em até 5 tentativas e depois encaminhadas para a DLQ.
-- [ ] Administradores conseguem executar o replay de mensagens retidas na DLQ com sucesso.
-- [ ] Rotação de segredos permite transição suave sem quebra de mensagens por 24 horas.
+- [ ] Operador autenticado cadastra, lista, edita (`PATCH`) e remove endpoints `https://` vinculados a `customerId` e lista de `OrderStatus`, recebendo `secret` apenas na criação e rotação.
+- [ ] Alterações em `PATCH /api/v1/orders/:id/status` gravam snapshot em `webhook_outbox` na mesma transação SQL apenas quando há endpoint ativo inscrito no novo status.
+- [ ] Disparo outbound pelo worker separado (`src/worker.ts`) respeita timeout de 10s e envia payload compacto com headers `X-Event-Id`, `X-Signature` (HMAC-SHA256), `X-Timestamp`, `X-Webhook-Id` e contexto de trace.
+- [ ] Payloads maiores que 64 KB e URLs `http://` são rejeitados com erro explícito (sem truncar).
+- [ ] Falhas externas disparam até 5 retentativas (`1m/5m/30m/2h/12h`) e, ao esgotar, movem o evento para `webhook_dead_letter`.
+- [ ] Apenas usuários `ADMIN` conseguem acionar `POST /api/v1/admin/webhooks/dead-letter/:id/replay`, registrando auditoria do operador; outros perfis recebem `403`.
+- [ ] Rotação de secret mantém a chave anterior funcional por 24 horas antes da revogação definitiva.
 
 ---
 
-## 12. Estratégia de Testes, Validação & Rollout
+## 12. Estratégia de Testes e Validação
 
-1. **Testes Unitários e de Integração:** Validação da geração de HMAC, montagem de payloads e persistência em banco simulando falhas de transação.
-2. **Ambiente de Homologação (Sandbox):** Disponibilização de servidor *echo/mock* com simulação de latência e falhas HTTP 500 para testes de ponta a ponta.
-3. **Rollout Piloto:**
-   - **Fase 1 (Semana 1):** Validação interna com clientes de teste e monitoramento contínuo de latência.
-   - **Fase 2 (Semana 2):** Conexão inicial com a Atlas E-commerce como cliente pioneiro (*early adopter*).
-   - **Fase 3 (Semana 3):** Habilitação geral para MaxDistribuição, Nova Cargo e demais parceiros B2B.
+1. **Testes Unitários (Vitest):** Geração e verificação de HMAC-SHA256, cálculo da janela de rotação de 24h, validação de schemas Zod (`https://`, `OrderStatus`, 64 KB sem truncar) e escalonamento de backoff exponencial.
+2. **Testes de Integração com API e Banco (`tests/` com Vitest + Supertest):**
+   - Atomicidade e rollback em `OrderService.changeStatus` quando o estoque falha ou o payload excede 64 KB.
+   - Ciclo completo CRUD (`/api/v1/webhooks`), filtro prévio de `events` na outbox, histórico `/deliveries`, bloqueio `403` para `OPERATOR` no replay e autorização `200` para `ADMIN`.
+3. **Homologação com Clientes B2B e Revisão de Segurança:** Testes ponta a ponta contra endpoints HTTPS de staging medindo latência (< 10s), seguidos dos **2 dias úteis de revisão pela Engenharia de Segurança (Sofia)** antes da liberação gradual para Atlas Comercial, MaxDistribuição e Nova Cargo (`[09:46] Sofia`).

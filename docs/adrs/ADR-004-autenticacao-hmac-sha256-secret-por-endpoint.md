@@ -13,15 +13,15 @@ Adicionalmente, se as credenciais de um cliente forem comprometidas acidentalmen
 ## Decisão
 Adotar o padrão da indústria de assinatura simétrica **HMAC-SHA256 gerada por endpoint com suporte a rotação com período de transição (*grace period*) de 24 horas**:
 
-1. **Algoritmo de Assinatura:** Uso de HMAC com função hash SHA-256 (`crypto.createHmac('sha256', secret)`) calculada sobre o *raw body* exato em formato JSON ([09:20] Sofia).
-2. **Transporte da Assinatura:** A assinatura hexadecimal gerada será transmitida no cabeçalho HTTP customizado `X-Signature`.
-3. **Secret Única por Endpoint:** Cada endpoint cadastrado por um cliente possuirá uma chave secreta (`secret`) exclusiva gerada aleatoriamente no momento do cadastro ([09:21] Sofia). Não haverá chave global de plataforma.
+1. **Algoritmo de Assinatura:** Uso de HMAC com função hash SHA-256 (`crypto.createHmac('sha256', secret)`) calculada diretamente sobre o *raw JSON body* exato serializado para o disparo ([09:20] Sofia), permitindo validação segura via comparação em tempo constante (`crypto.timingSafeEqual`).
+2. **Transporte da Assinatura:** A assinatura hexadecimal gerada será transmitida no cabeçalho HTTP customizado `X-Signature: sha256=<hex>`.
+3. **Secret Única por Endpoint:** Cada endpoint cadastrado por um cliente possuirá uma chave secreta (`secret`) exclusiva gerada aleatoriamente no momento do cadastro ([09:21] Sofia) e retornada apenas na criação e rotação. Não haverá chave global de plataforma.
 4. **Mecanismo de Rotação com Grace Period:**
-   - Criação do endpoint `POST /webhooks/:id/rotate-secret` para solicitar um novo segredo.
-   - Ao rotacionar, a secret anterior é mantida em estado secundário válido por um período estrito de **24 horas** ([09:21] Sofia). Durante essa janela, o cliente tem tempo hábil para reconfigurar seus ambientes sem perder eventos. Após 24h, a chave antiga é revogada definitivamente.
-5. **Prevenção a Ataques de Replay:** Envio do cabeçalho `X-Timestamp` contendo a data/hora em ISO 8601 da expedição, permitindo ao receptor validar a janela de tolerância de frescor da requisição ([09:44] Diego).
-6. **Obrigatoriedade de TLS (HTTPS):** URLs cadastradas devem obrigatoriamente utilizar o protocolo `https://`. Protocolos inseguros (`http://`) serão rejeitados na camada de schema Zod ([09:23] Sofia).
-7. **Teto de Carga (Payload Limit):** Limite máximo de **64 KB** por evento. Payloads superiores serão bloqueados com erro explícito de validação ([09:24] Diego, Larissa).
+   - Criação do endpoint `POST /api/v1/webhooks/:id/rotate-secret` para solicitar um novo segredo.
+   - Ao rotacionar, a secret anterior é mantida em `previousSecret` válida por um período estrito de **24 horas** (`secretExpiresAt` — `[09:21] Sofia`). Durante essa janela, o cliente tem tempo hábil para reconfigurar seus ambientes sem perder eventos. Após 24h, a chave antiga é revogada definitivamente.
+5. **Prevenção a Ataques de Replay:** Envio do cabeçalho `X-Timestamp` contendo a data/hora em ISO 8601 UTC da expedição, permitindo ao receptor validar a janela de tolerância de frescor da requisição ([09:44] Diego).
+6. **Obrigatoriedade de TLS (HTTPS) e Proteção SSRF:** URLs cadastradas devem obrigatoriamente utilizar o protocolo `https://` e não resolver para IPs privados ou loopback (`http://` é rejeitado na validação do schema Zod — `[09:23] Sofia`).
+7. **Teto de Carga (Payload Limit):** Limite máximo de **64 KB** por evento. Payloads superiores serão rejeitados com erro explícito (sem truncamento — `[09:23]–[09:24] Sofia, Diego, Larissa`).
 
 ## Alternativas Consideradas
 

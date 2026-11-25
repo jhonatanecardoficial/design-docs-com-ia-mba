@@ -12,11 +12,11 @@ Disparar requisições HTTP diretamente de forma síncrona dentro dessa transaç
 Implementar o **Padrão Transactional Outbox** persistido na mesma base de dados MySQL existente através de uma nova tabela `webhook_outbox`.
 
 Principais diretrizes da decisão:
-1. **Transacionalidade Estrita:** A inserção do evento na tabela `webhook_outbox` ocorrerá dentro da mesma transação SQL (`tx`) gerenciada pelo Prisma Client no método `changeStatus` de `src/modules/orders/order.service.ts`. Se a transação falhar ou sofrer rollback, o evento não é gerado; se a transação comitar, o evento fica garantidamente registrado.
-2. **Identificador em UUID:** Em consonância com a arquitetura do projeto (`prisma/schema.prisma`), a chave primária da tabela `webhook_outbox` utilizará `String @id @default(uuid()) @db.Char(36)` ([09:51] Larissa).
-3. **Snapshot do Payload na Inserção:** O payload completo da notificação será serializado em JSON e persistido no momento da criação do registro na outbox ([09:52] Diego, Larissa). Isso evita divergências caso o pedido sofra mutações subsequentes antes da entrega física do webhook.
-4. **Filtro Prévio de Eventos:** O evento só será inserido na outbox se houver algum webhook ativo cadastrado para o cliente com interesse naquele status específico ([09:34] Bruno).
-5. **Indexação:** Criação de índices compostos em `(status, created_at)` para otimizar a leitura do worker.
+1. **Transacionalidade Estrita:** A inserção do evento na tabela `webhook_outbox` ocorrerá dentro da mesma transação SQL (`tx`) gerenciada pelo Prisma Client no método `changeStatus` de `src/modules/orders/order.service.ts`, através da função pura `publishWebhookEvent(tx, order, fromStatus, toStatus)` (`[09:41] Bruno, Diego`). Se a transação falhar ou sofrer rollback, o evento não é gerado; se a transação comitar, o evento fica garantidamente registrado.
+2. **Identificador em UUID:** Em consonância com a arquitetura do projeto (`prisma/schema.prisma`), a chave primária da tabela `webhook_outbox` utilizará `String @id @default(uuid()) @db.Char(36)` (`[09:51] Larissa`).
+3. **Snapshot do Payload na Inserção:** O payload completo da notificação será serializado em JSON e persistido no momento da criação do registro na outbox (`[09:52] Diego, Larissa`). Isso evita divergências caso o pedido sofra mutações subsequentes antes da entrega física do webhook.
+4. **Filtro Prévio de Eventos:** O evento só será inserido na outbox se houver algum webhook ativo cadastrado para o `customerId` com interesse naquele `OrderStatus` específico (`PENDING`, `PAID`, `PROCESSING`, `SHIPPED`, `DELIVERED`, `CANCELLED` — `[09:34] Bruno`).
+5. **Indexação:** Criação de índices compostos em `(status, next_retry_at)` e `(status, created_at)` para otimizar a leitura do worker.
 
 ## Alternativas Consideradas
 

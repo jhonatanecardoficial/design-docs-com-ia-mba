@@ -13,7 +13,7 @@ Implementar o despachante de webhooks como um **Worker autônomo rodando em proc
 
 1. **Processo Desacoplado:** O worker será inicializado a partir de um novo entrypoint `src/worker.ts` e executado via script dedicado `"npm run worker"` no `package.json` ([09:11] Larissa). Ele não compartilhará memória ou ciclo de vida com `src/server.ts`.
 2. **Ciclo de Polling de 2 Segundos:** O worker executará uma busca no MySQL a cada 2.000 ms selecionando eventos com status `PENDING` ordenados por `created_at ASC` em lotes controlados (*batch*) ([09:08], [09:09] Diego).
-3. **Instância Dedicada do PrismaClient:** Como roda em processo Node.js independente, o worker instanciará seu próprio `PrismaClient` conectando à mesma `DATABASE_URL`, sem interferir no pool da API HTTP ([09:11], [09:30] Bruno).
+3. **Instância Dedicada do PrismaClient:** Como roda em processo Node.js independente, o worker instanciará seu próprio `PrismaClient` utilizando a fábrica `createPrismaClient()` (`src/config/database.ts`) conectando à mesma `DATABASE_URL`, sem interferir no pool da API HTTP ([09:11], [09:30] Bruno).
 4. **Modelo Single-Worker no MVP:** No estágio inicial, operará uma única instância ativa do worker. Isso garante a ordenação sequencial estrita dos eventos de um mesmo pedido sem a complexidade de locks distribuídos ou particionamento de filas ([09:12] Diego).
 
 ## Alternativas Consideradas

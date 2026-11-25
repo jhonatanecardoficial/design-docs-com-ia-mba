@@ -11,18 +11,18 @@ Conforme discutido na reunião técnica ([09:16] Diego), clientes da empresa já
 ## Decisão
 Adotar uma política de **5 tentativas com backoff exponencial espaçado** e encaminhamento para uma **Dead Letter Queue (DLQ) persistida em tabela separada**:
 
-1. **Número de Tentativas:** Máximo de 5 tentativas de entrega ([09:15], [09:16] Diego, Larissa).
+1. **Política de Tentativas:** Disparo inicial imediato via polling seguido de **no máximo 5 retentativas** com backoff exponencial (totalizando até 6 tentativas físicas de entrega) antes da falha permanente ([09:15], [09:16] Diego, Larissa).
 2. **Escala de Backoff Exponencial:** Os intervalos de espera após cada falha consecutiva serão estritamente:
-   - Tentativa 1 (imediata via polling)
-   - Tentativa 2: após **1 minuto**
-   - Tentativa 3: após **5 minutos**
-   - Tentativa 4: após **30 minutos**
-   - Tentativa 5: após **2 horas**
-   - Tentativa 6 (final): após **12 horas**
-   - *Janela total de cobertura:* aproximadamente 14h36m entre o primeiro evento e o descarte ([09:17] Diego).
-3. **Timeout de Conexão e Leitura:** Limite rígido de **10 segundos** para a chamada HTTP externa ([09:42] Diego, Sofia). Respostas demoradas serão tratadas como timeout/falha.
-4. **Isolamento da DLQ:** Criar a tabela `webhook_dead_letter` no MySQL para armazenar eventos que falharem após as 5 tentativas de retry, registrando o snapshot do payload original, código de erro/status HTTP recebido, stack de erro e timestamps ([09:18] Diego).
-5. **Replay Administrativo Controlado:** Disponibilização do endpoint autenticado `POST /admin/webhooks/dead-letter/:id/replay` restrito a operadores com permissão `UserRole.ADMIN`, recolocando o evento na outbox com status `PENDING` e registrando log de auditoria ([09:18] Diego, [09:35], [09:36] Sofia).
+   - Disparo inicial (imediato no ciclo de polling de 2s)
+   - Retentativa 1: após **1 minuto**
+   - Retentativa 2: após **5 minutos**
+   - Retentativa 3: após **30 minutos**
+   - Retentativa 4: após **2 horas**
+   - Retentativa 5 (final): após **12 horas**
+   - *Janela total de cobertura:* aproximadamente 14h36m (~15h) entre o primeiro erro e o envio à DLQ ([09:17] Diego).
+3. **Timeout de Conexão e Leitura:** Limite rígido de **10 segundos** para a chamada HTTP externa (`AbortController` nativo) ([09:42] Diego, Sofia). Respostas demoradas serão tratadas como timeout/falha.
+4. **Isolamento da DLQ:** Criar a tabela `webhook_dead_letter` no MySQL para armazenar eventos que falharem após esgotarem as 5 retentativas, registrando o snapshot do payload original, código de erro/status HTTP recebido, stack/mensagem de erro e timestamps ([09:18] Diego).
+5. **Replay Administrativo Controlado:** Disponibilização do endpoint autenticado `POST /api/v1/admin/webhooks/dead-letter/:id/replay` restrito a operadores com permissão `UserRole.ADMIN` (`requireRole('ADMIN')`), recolocando o evento na outbox com status `PENDING` e registrando log de auditoria ([09:18] Diego, [09:35], [09:36] Sofia).
 
 ## Alternativas Consideradas
 
